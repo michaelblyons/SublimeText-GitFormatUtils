@@ -1,4 +1,5 @@
 import os
+from subprocess import run, CalledProcessError
 
 import sublime
 import sublime_plugin
@@ -54,46 +55,45 @@ except (AttributeError, ImportError, AssertionError):
         return os.path.realpath(path) if path else None
 
 
-def is_work_tree(path):
-    """Check if 'path' is a valid git working tree.
+def git_rev_parse(file_path, arg='--show-toplevel'):
+    """Get Git repo path info from a file path.
 
-    A working tree contains a `.git` directory or file.
-
-    Arguments:
-        path (string): The path to check.
-
-    Returns:
-        bool: True if path contains a '.git'
-    """
-    return path and os.path.exists(os.path.join(path, '.git'))
-
-
-def split_work_tree(file_path):
-    """Split the 'file_path' into working tree and relative path.
-
-    The file_path is converted to a absolute real path and split into
-    the working tree part and relative path part.
+    The file_path is converted to a absolute real path `git rev-parse`
+    is run with that working directory.
 
     Note:
-        This is a local alternative to calling the git command:
-
-            git rev-parse --show-toplevel
+        This directly calls `git rev-parse` with your option.
 
     Arguments:
         file_path (string): Absolute path to a file.
 
     Returns:
-        A tuple of two the elements (working tree, file path).
+        the git-related path.
     """
+    rev_parse_path_args = {
+        '--git-dir',
+        '--absolute-git-dir',
+        '--git-common-dir',
+        '--show-toplevel',
+        '--show-superproject-working-tree',
+        '--shared-index-path',
+    }
+    if arg not in rev_parse_path_args:
+        raise Exception('"arg" should be a `git rev-parse` '
+                        'option with a single path output.')
     if file_path:
         path, name = os.path.split(realpath(file_path))
-        # files within '.git' path are not part of a work tree
-        while path and name and name != '.git':
-            if is_work_tree(path):
-                return (path, os.path.relpath(
-                    file_path, path).replace('\\', '/'))
-            path, name = os.path.split(path)
-    return (None, None)
+        try:
+            completed_proc = run(['git', 'rev-parse', arg], cwd=path,
+                                 capture_output=True)
+            # print(completed_proc)
+            if completed_proc.returncode:
+                return None
+            git_path = completed_proc.stdout.decode().strip()
+            return git_path
+        except CalledProcessError as e:
+            pass
+    return None
 
 
 class GitOpenFileCommand(sublime_plugin.TextCommand):
@@ -103,12 +103,17 @@ class GitOpenFileCommand(sublime_plugin.TextCommand):
         self.repo = None
 
     def is_enabled(self):
-        self.repo, _ = split_work_tree(self.view.file_name())
+        self.repo = git_rev_parse(self.view.file_name())
         return self.repo is not None
 
-    def run(self, edit, name, syntax=None):
+    def run(self, edit, file, rev_parse_arg=False, syntax=None):
+        root = self.repo
+        if rev_parse_arg:
+            root = git_rev_parse(self.view.file_name(), rev_parse_arg)
+
+        # TODO: fix when file (like .gitignore) does not exist
         view = self.view.window().open_file(
-            os.path.join(self.repo, name),
+            os.path.join(root, file),
             sublime.TRANSIENT
         )
         if syntax:
